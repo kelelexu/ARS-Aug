@@ -97,7 +97,6 @@ def autoaugment(subpolicies,X, y):
                 _ix = ix[i*128:(i+1)*128]
                 _X = X[_ix]
                 _y = y[_ix]
-                print('subpolicies = ',subpolicies)
                 subpolicy = np.random.choice(subpolicies)
                 _X = _X.astype(np.float32) / 255
                 yield _X, _y
