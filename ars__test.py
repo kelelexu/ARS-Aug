@@ -36,13 +36,11 @@ def autoaugment(X, y):
         while True:
             ix = np.arange(len(X))
             np.random.shuffle(ix)
-            for i in range(40):
+            for i in range(4000):
                 _ix = ix[i*128:(i+1)*128]
                 _X = X[_ix]
                 _y = y[_ix]
-                subpolicy = np.random.choice(subpolicies)
-                
-                
+                subpolicy = np.random.choice(subpolicies)               
                 _X = _X.astype(np.float32) / 255
                 yield _X, _y
 
@@ -74,7 +72,7 @@ def get_dataset(dataset, reduced):
     model.compile(optimizers.SGD(decay=1e-4), 'categorical_crossentropy', ['accuracy'])
     gen = autoaugment(Xtr,ytr)
     model.fit_generator(
-           gen, 40, 1, verbose=0, use_multiprocessing=True)
+           gen, 4000, 1, verbose=0, use_multiprocessing=True)
     accuracy = model.evaluate(Xts, yts, verbose=0)[1]
     return accuracy
 
