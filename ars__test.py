@@ -31,8 +31,65 @@ import socket
 import random
 from shared_noise import *
 
+def gett_dataset(dataset, reduced):
+    if dataset == 'cifar10':
+        (Xtr, ytr), (Xts, yts) = datasets.cifar10.load_data()
+    elif dataset == 'cifar100':
+        (Xtr, ytr), (Xts, yts) = datasets.cifar100.load_data()
+    else:
+        raise Exception('Unknown dataset %s' % dataset)
+    if reduced:
+        ix = np.random.choice(len(Xtr), 4000, False)
+        Xtr = Xtr[ix]
+        ytr = ytr[ix]
+    ytr = utils.to_categorical(ytr)
+    yts = utils.to_categorical(yts)
+    return (Xtr, ytr), (Xts, yts)
 
-def autoaugment(X, y):
+(Xtr, ytr), (Xts, yts) = gett_dataset('cifar10', True)
+transformations = get_transformations(Xtr)
+
+class Operation:
+    def __init__(self, types_softmax, probs_softmax, magnitudes_softmax):
+        
+        
+        self.type = types_softmax
+        t = transformations[self.type]
+        self.prob = probs_softmax
+        m = magnitudes_softmax
+        self.magnitude = m*(t[2]-t[1]) + t[1]
+        self.transformation = t[0]
+
+    def __call__(self, X):
+        _X = []
+        for x in X:
+            if np.random.rand() < self.prob:
+                x = PIL.Image.fromarray(x)
+                x = self.transformation(x, self.magnitude)
+            _X.append(np.array(x))
+        return np.array(_X)
+
+    def __str__(self):
+        return 'Operation %2d (P=%.3f, M=%.3f)' % (self.type, self.prob, self.magnitude)
+
+class Subpolicy:
+    def __init__(self, *operations):
+        self.operations = operations
+
+    def __call__(self, X):
+        for op in self.operations:
+            X = op(X)
+        return X
+
+    def __str__(self):
+        ret = ''
+        for i, op in enumerate(self.operations):
+            ret += str(op)
+            if i < len(self.operations)-1:
+                ret += '\n'
+        return ret
+
+def autoaugment(subpolicies,X, y):
         while True:
             ix = np.arange(len(X))
             np.random.shuffle(ix)
@@ -40,13 +97,14 @@ def autoaugment(X, y):
                 _ix = ix[i*128:(i+1)*128]
                 _X = X[_ix]
                 _y = y[_ix]
-                subpolicy = np.random.choice(subpolicies)               
+                print('subpolicies = ',subpolicies)
+                subpolicy = np.random.choice(subpolicies)
                 _X = _X.astype(np.float32) / 255
                 yield _X, _y
 
                 
 @ray.remote
-def get_dataset(dataset, reduced):
+def get_dataset(subpolicies,dataset, reduced):
     if dataset == 'cifar10':
         (Xtr, ytr), (Xts, yts) = datasets.cifar10.load_data()
     elif dataset == 'cifar100':
@@ -70,7 +128,7 @@ def get_dataset(dataset, reduced):
     x = layers.Dense(10, activation='softmax')(x)
     model = models.Model(input_layer, x)
     model.compile(optimizers.SGD(decay=1e-4), 'categorical_crossentropy', ['accuracy'])
-    gen = autoaugment(Xtr,ytr)
+    gen = autoaugment(subpolicies,Xtr,ytr)
     model.fit_generator(
            gen, 4000, 1, verbose=0, use_multiprocessing=True)
     accuracy = model.evaluate(Xts, yts, verbose=0)[1]
@@ -104,9 +162,11 @@ class Worker(object):
         self.policy_params = policy_params
         if policy_params['type'] == 'linear':
             self.policy = LinearPolicy(policy_params)
+            
         else:
             raise NotImplementedError
-            
+        
+        self.w_policy = self.policy.get_weights()
         self.delta_std = delta_std
         self.rollout_length = rollout_length
 
@@ -118,6 +178,31 @@ class Worker(object):
         assert self.policy_params['type'] == 'linear'
         return self.policy.get_weights_plus_stats()
     
+    def get_answer(self):
+        cnt = 1 
+        type_now = []
+        prob = []
+        magnitude = []
+        for a in self.w_policy:
+            a[0] = 1 / (1 + np.exp(-a[0]))
+            if cnt % 3 ==1 :
+                 type_now.append(int(a[0] * 16))
+            elif cnt % 3 ==2:
+                 prob.append(a[0])
+            else:
+                 magnitude.append(a[0])
+            cnt = cnt + 1
+        cnt = 0
+        subpolicies = []
+        operations = []
+        for i in range(5):
+            operations = []
+            for j in range(1):
+                operations.append(Operation(type_now[cnt],prob[cnt],magnitude[cnt]))
+                cnt = cnt + 1
+                operations.append(Operation(type_now[cnt],prob[cnt],magnitude[cnt]))
+            subpolicies.append(Subpolicy(*operations))
+        return subpolicies
 
     def rollout(self, shift = 0., rollout_length = None):
         """ 
@@ -127,9 +212,30 @@ class Worker(object):
         
         if rollout_length is None:
             rollout_length = self.rollout_length
-        
-        
-        a = get_dataset.remote('cifar10',True)
+    #############################################################    
+        cnt = 1 
+        type_now = []
+        prob = []
+        magnitude = []
+        for a in self.w_policy:
+            if cnt % 3 ==1 :
+                 type_now.append(abs(int(a[0] * 16)))
+            elif cnt % 3 ==2:
+                 prob.append(abs(a[0]))
+            else:
+                 magnitude.append(abs(a[0]))
+            cnt = cnt + 1
+        cnt = 0
+        subpolicies = []
+        operations = []
+        for i in range(5):
+            operations = []
+            for j in range(1):
+                operations.append(Operation(type_now[cnt],prob[cnt],magnitude[cnt]))
+                cnt = cnt + 1
+                operations.append(Operation(type_now[cnt],prob[cnt],magnitude[cnt]))
+            subpolicies.append(Subpolicy(*operations))
+        a = get_dataset.remote(subpolicies,'cifar10',True)
         acc = ray.get(a)
         #total_reward = 0.
         steps = 0
@@ -137,16 +243,8 @@ class Worker(object):
         ob = 0
         action = self.policy_params
         total_reward = acc  
-       # steps = 5
+    ###############################################################
 
-     #   ob = self.env.reset()
-         #   for i in range(rollout_length):
-     #       action = self.policy.act(ob)
-     #       ob, reward, done, _ = self.env.step(action)
-     #       steps += 1
-     #       total_reward += (reward - shift)
-     #       if done:
-     #           break
             
         return total_reward, steps
 
@@ -269,11 +367,9 @@ class ARSLearner(object):
         if policy_params['type'] == 'linear':
             self.policy = LinearPolicy(policy_params)
             self.w_policy = self.policy.get_weights()
-           # for a in self.w_policy:
+          #  for a in self.w_policy:
            #         print('b = ', 2*(a[0]+1))
-           #     if a== 0 :
-           #         print('nimabi')
-          #  print('policy =  ',self.w_policy)
+           # print('policy =  ',self.w_policy)
         else:
             raise NotImplementedError
             
@@ -307,10 +403,18 @@ class ARSLearner(object):
                                                  num_rollouts = 1,
                                                  shift = self.shift,
                                                  evaluate=evaluate) for worker in self.workers[:(num_deltas % self.num_workers)]]
+        
+        rollout_ids_three = [worker.get_answer.remote() for worker in self.workers]
 
         # gather results 
         results_one = ray.get(rollout_ids_one)
         results_two = ray.get(rollout_ids_two)
+        
+        results_three = ray.get(rollout_ids_three)
+        
+        for result in results_three:
+            for b in result:
+                print('result = ',b)
 
         rollout_rewards, deltas_idx = [], [] 
 
