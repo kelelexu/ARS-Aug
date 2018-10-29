@@ -9,7 +9,7 @@ def good_policies():
       [('Solarize', 0.66, 0.34), ('Equalize', 0.56, 0.61)],
       [('Equalize', 0.43, 0.82), ('Rotate', 0.86, 0.77)],
       [('Color', 0.72, 0.47), ('Contrast', 0.88, 0.86)],
-      [('Sharpness', 0.51, 0.59), ('Invert', 0.54, 0.91)],
+      [('Sharpness', 0.51, 0.59), ('Sharpness', 0.86, 0.36)],
       [('Solarize', 0.68, 0.46), ('AutoContrast', 0.74, 0.88)]]
   exp0_1 = [
       [('TranslateY', 0.88, 0.96), ('TranslateY', 0.53, 0.79)],
